@@ -6,6 +6,13 @@ A curses git committing utility
 - Coloured diff
 - Syntax highlight (uses highlight binary)
 
+Wait, but why?
+==============
+
+After [analysing my git workflow](https://visualize-your-git.herokuapp.com/) 14 months ago I notices that most of the time I would call git I would do it in a loop of `git status` -> `git diff` -> `git add` and when I went over all files I would `git commit`. I made a small tool that went over all the files allowing me to diff, add or skip the file.
+The tool was missing the possibility to go back to previous files, adding untracked files, etc... but it saved me a lot of time over the past months.
+This is an improved version based on curses that will show the diff immediately on the right part of the screen.
+
 Key bindings
 ============
 - `Up`, `down` : Select previous/next file
