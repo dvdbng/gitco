@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from plumbum.cmd import git, highlight, ls
+from plumbum import local, FG
 from color import get_color
 
 import ansi
@@ -8,13 +9,26 @@ import ansi
 import curses
 import os
 import re
+import shlex
 import sys
 
 def git_status():
     return filter(None, (git["status", "--porcelain"])().split("\n"))
 
 def git_diff(file):
-    return (git["diff", "--color=always", "--", file])()
+    return (git["diff", "--color=always", "--", file]() or
+            git["diff", "--color=always", 'HEAD', "--", file]())
+
+def edit(file):
+    editor = 'vim'
+    for var in 'GITCO_EDITOR', 'VISUAL', 'EDITOR':
+        if var in os.environ:
+            editor = os.environ[var]
+            break
+    args = shlex.split(editor)
+    args.append(file)
+    with suspend_curses():
+        local[args[0]](*args[1:])
 
 def cat_file(file):
     try:
@@ -25,6 +39,14 @@ def cat_file(file):
 
 def list_dir(file):
     return ls['--color=always', '-lAhtr']()
+
+class suspend_curses():
+    """Context Manager to temporarily leave curses mode"""
+    def __enter__(self):
+        curses.endwin()
+
+    def __exit__(self, exc_type, exc_val, tb):
+        curses.doupdate()
 
 MENU_PC = 0.4 # Percentage of screen that is menu (the rest is diff)
 
@@ -175,9 +197,17 @@ def handle(key, menu):
     if key == ord('a'):
         git['add', '--', file]()
     elif key == ord('c'):
-        git["checkout", '--', file]()
+        #git["checkout", '--', file]()
+        pass
     elif key == ord('r'):
         git["reset", 'HEAD', '--', file]()
+    elif key == curses.KEY_F5:
+        pass # Handling the key will cause the data to update
+    elif key in (curses.KEY_ENTER, ord('\n')):
+        with suspend_curses():
+            git['commit'] & FG
+    elif key == ord('e'):
+        edit(file)
     elif key == ord('q'):
         sys.exit(0)
     else:
