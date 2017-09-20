@@ -6,9 +6,10 @@
 
 from ranger.gui import color
 import re
+from color import get_color, get_rgb
 
 ansi_re = re.compile('(\x1b' + r'\[\d*(?:;\d+)*?[a-zA-Z])')
-codesplit_re = re.compile('38;5;(\d+);|48;5;(\d+);|(\d*);')
+codesplit_re = re.compile('38;5;(\d+);|48;5;(\d+);|([34]8;2;\d+;\d+;\d+);|(\d*);')
 reset = '\x1b[0m'
 
 def split_ansi_from_text(ansi_text):
@@ -29,10 +30,17 @@ def text_with_fg_bg_attr(ansi_text):
             attr_args = match.group(1)
 
             # Convert arguments to attributes/colors
-            for x256fg, x256bg, arg in codesplit_re.findall(attr_args + ';'):
+            for x256fg, x256bg, rgbcolor, arg in codesplit_re.findall(attr_args + ';'):
                 # first handle xterm256 codes
                 try:
-                    if len(x256fg) > 0:           # xterm256 foreground
+                    if len(rgbcolor) > 0:
+                        channel, _, r, g, b = map(int, rgbcolor.split(';'))
+                        if channel == 38:
+                            fg = get_rgb(r, g, b)
+                        else:
+                            bg = get_rgb(r, g, b)
+                        continue
+                    elif len(x256fg) > 0:           # xterm256 foreground
                         fg = int(x256fg)
                         continue
                     elif len(x256bg) > 0:         # xterm256 background
@@ -42,12 +50,12 @@ def text_with_fg_bg_attr(ansi_text):
                         n = int(arg)
                     else:                         # empty code means reset
                         n = 0
-                except:
+                except ValueError:
                     continue
+
 
                 if n == 0:                        # reset colors and attributes
                     fg, bg, attr = -1, -1, 0
-
                 elif n == 1:                      # enable attribute
                     attr |= color.bold
                 elif n == 4:
@@ -93,6 +101,31 @@ def text_with_fg_bg_attr(ansi_text):
         else:
             yield chunk
 
+control_chars = ''.join(map(unichr, range(0,32) + range(127,160)))
+control_char_re = re.compile('[%s]' % re.escape(control_chars))
+def escape_non_printable(s):
+  return control_char_re.sub('?', s)
+
+
+# ansi text -> [(text, attr), ...]
+def ansi_to_attr_list(text):
+    return [('', 0)]
+
+    res = []
+    current_attr = 0
+    current_color = None
+    for chunk in text_with_fg_bg_attr(text):
+        if isinstance(chunk, tuple):
+            fg, bg, attr = chunk
+            current_color = bg
+            current_attr = get_color(fg, bg) | attr
+        else:
+            if isinstance(chunk, unicode):
+                chunk = chunk.encode('utf-8')
+            chunk = escape_non_printable(chunk)
+            res.append(("%s %r" % (chunk, current_color), current_attr))
+    return res
+
 def char_len(ansi_text):
     """Count the number of visible characters.
 
@@ -136,9 +169,12 @@ def char_slice(ansi_text, start, length):
     chunks = []
     last_color = ""
     pos = old_pos = 0
+    finished_text = False
     for i, chunk in enumerate(split_ansi_from_text(ansi_text)):
         if i % 2 == 1:
-            last_color = chunk
+            chunks.append(chunk)
+            continue
+        if finished_text:
             continue
 
         old_pos = pos
@@ -146,16 +182,13 @@ def char_slice(ansi_text, start, length):
         if pos <= start:
             pass # seek
         elif old_pos < start and pos >= start:
-            chunks.append(last_color)
             chunks.append(chunk[start-old_pos:start-old_pos+length])
         elif pos > length + start:
-            chunks.append(last_color)
             chunks.append(chunk[:start-old_pos+length])
         else:
-            chunks.append(last_color)
             chunks.append(chunk)
         if pos - start >= length:
-            break
+            finished_text = True
     return ''.join(chunks)
 
 if __name__ == '__main__':

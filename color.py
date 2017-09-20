@@ -3,8 +3,19 @@ import curses
 DEFAULT_FOREGROUND = curses.COLOR_WHITE
 DEFAULT_BACKGROUND = curses.COLOR_BLACK
 COLOR_PAIRS = {10: 0}
+COLORS = {}
 
-def get_color(fg, bg):
+def get_rgb(r,g,b):
+    key = r,g,b
+    if key not in COLORS:
+        s = 1000/256.0
+        num = 100 + len(COLORS)
+        curses.init_color(num, int(r*s), int(g*s), int(b*s));
+        COLORS[key] = num
+    return COLORS[key]
+
+
+def get_color(fg, bg = -1):
     """Returns the curses color pair for the given fg/bg combination."""
     key = (fg, bg)
     if key not in COLOR_PAIRS:
@@ -22,5 +33,5 @@ def get_color(fg, bg):
             curses.init_pair(size, fg, bg)
         COLOR_PAIRS[key] = size
 
-    return COLOR_PAIRS[key]
+    return curses.color_pair(COLOR_PAIRS[key])
 

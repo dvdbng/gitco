@@ -1,186 +1,42 @@
-#!/usr/bin/env python
-
-from plumbum.cmd import git, highlight, ls
-from plumbum import local, FG
-from color import get_color
-
-import ansi
-
+#!/usr/bin/python
 import curses
 import os
-import re
-import shlex
 import sys
+import time
+
+import start_app
+from actions import edit, suspend_curses, list_dir, cat_file
+
+while not os.path.exists('.git'):
+    os.chdir('..')
+
+from plumbum.cmd import git, hub
+from plumbum import local, FG
+
+treeish = None if len(sys.argv) == 1 else sys.argv[1]
 
 def git_status():
-    return filter(None, (git["status", "--porcelain"])().split("\n"))
+    if treeish:
+        lines = git['diff-tree', '--no-commit-id', '--name-status', '-r', treeish]().split('\n')
+        lines = ['   ' + line[2:] for line in lines]
+    else:
+        lines = (git["status", "--porcelain"])().split("\n")
+    return [[(line, 0)] for line in lines if line]
+
 
 def git_diff(file):
-    return (git["diff", "--color=always", "--", file]() or
-            git["diff", "--color=always", 'HEAD', "--", file]())
+    if treeish:
+        return git["show", "--color=always", treeish, '--', file]()
+    else:
+        return (git["diff", "--color=always", "--", file]() or
+                git["diff", "--color=always", 'HEAD', "--", file]())
 
-def edit(file):
-    editor = 'vim'
-    for var in 'GITCO_EDITOR', 'VISUAL', 'EDITOR':
-        if var in os.environ:
-            editor = os.environ[var]
-            break
-    args = shlex.split(editor)
-    args.append(file)
-    with suspend_curses():
-        local[args[0]](*args[1:])
-
-def cat_file(file):
-    try:
-        return (highlight['-O', 'ansi', file])()
-    except:
-        with open(file, 'r') as f:
-            return f.read()
-
-def list_dir(file):
-    return ls['--color=always', '-lAhtr']()
-
-class suspend_curses():
-    """Context Manager to temporarily leave curses mode"""
-    def __enter__(self):
-        curses.endwin()
-
-    def __exit__(self, exc_type, exc_val, tb):
-        curses.doupdate()
-
-MENU_PC = 0.4 # Percentage of screen that is menu (the rest is diff)
-
-class MenuView(object):
-    def __init__(self, mainwin, screenw, screenh):
-        self.width = int(screenw*MENU_PC)
-        self.left = 0
-        self.top = 0
-        self.height = screenh
-        self.win = mainwin.subwin(self.height, self.width, self.top, self.left)
-        self.selected_index = -1
-
-    def set_options(self, options):
-        self.options = options
-        self._check_selected_index()
-        self.redraw()
-
-    def redraw(self):
-        self.win.erase()
-
-        for i, line in enumerate(self.options[:self.height]):
-            attr = curses.A_STANDOUT if i == self.selected_index else 0
-            self.win.addnstr(i, 0, line, self.width - 1, attr)
-
-        self.win.vline(0, self.width-1, '|', self.height)
-        self.win.refresh()
-
-    def _check_selected_index(self):
-        if self.selected_index < 0 and len(self.options):
-            self.selected_index = 0
-        elif self.selected_index >= len(self.options):
-            self.selected_index = len(self.options) - 1
-
-    def move(self, delta):
-        self.selected_index += delta
-        self._check_selected_index()
-        self.redraw()
-
-    def selected_file(self):
-        if self.selected_index >= 0:
-            return self.options[self.selected_index][3:]
-
-    def selected_status(self):
-        if self.selected_index >= 0:
-            return self.options[self.selected_index][:2]
-
-    def handle(self, key):
-        if key == curses.KEY_DOWN:
-            self.move(1)
-        elif key == curses.KEY_UP:
-            self.move(-1)
-        else:
-            return False
-        return True
-
-control_chars = ''.join(map(unichr, range(0,32) + range(127,160)))
-control_char_re = re.compile('[%s]' % re.escape(control_chars))
-def _repl_control_char(c):
-    return repr(c.group())[1:-1]
-def escape_non_printable(s):
-    return control_char_re.sub('?', s)
-
-class DiffView(object):
-    def __init__(self, mainwin, screenw, screenh):
-        self.width = int(screenw*(1-MENU_PC))
-        self.left = int(screenw*MENU_PC)
-        self.top = 0
-        self.height = screenh
-        self.win = mainwin.subwin(self.height, self.width, self.top, self.left)
-        self.reset()
-        self.proc = None
-
-    def reset(self):
-        self.line = 0
-
-    def redraw(self):
-        self.win.erase()
-        for i, line in enumerate(self.lines[self.line:self.line + self.height]):
-            self._draw_line(i, line)
-        self.win.refresh()
-
-    def _draw_line(self, i, line):
-        try:
-            self.win.move(i, 0)
-        except:
-            return
-        col = 0
-        for chunk in ansi.text_with_fg_bg_attr(line[:self.width]):
-            if isinstance(chunk, tuple):
-                fg, bg, attr = chunk
-                self.win.attrset(curses.color_pair(get_color(fg, bg)) | attr)
-            else:
-                chunk = escape_non_printable(str(chunk))[:self.width-col-1]
-                try:
-                    self.win.addstr(chunk)
-                except:
-                    raise Exception('Addstring %s %s %s %s' % (repr(chunk), len(chunk), col, self.width))
-                col += len(chunk)
-                if col >= self.width:
-                    return
-
-    def set_text(self, text):
-        self.reset()
-        lines = text.split('\n')
-        self.lines = lines
-        self.redraw()
-
-    def move(self, lines):
-        self.line += lines
-        if self.line < 0:
-            self.line = 0
-        elif self.line > len(self.lines) - self.height:
-            self.line = len(self.lines) - self.height
-        self.redraw()
-
-    def handle(self, key):
-        if key == ord('j'):
-            self.move(1)
-        elif key == ord('k'):
-            self.move(-1)
-        elif key == ord('g') or key == curses.KEY_HOME:
-            self.move(-len(self.lines))
-        elif key == ord('G') or key == curses.KEY_END:
-            self.move(len(self.lines))
-        elif key == ord('J') or key == curses.KEY_NPAGE:
-            self.move(int(self.height*0.8))
-        elif key == ord('K') or key == curses.KEY_PPAGE:
-            self.move(-int(self.height*0.8))
 
 def update(diff, menu):
     menu.set_options(git_status())
-    file = menu.selected_file()
-    status = menu.selected_status()
-    if file:
+    line = menu.selected_line()
+    if line:
+        file, status = line[3:], line[:2]
         if status in ('??', 'A '):
             if os.path.isdir(file):
                 text = list_dir(file)
@@ -192,43 +48,55 @@ def update(diff, menu):
         text = "No file selected"
     diff.set_text(text)
 
-def handle(key, menu):
-    file = menu.selected_file()
+
+def handle(key, menu, win):
+    global treeish
+    file = (menu.selected_line() or '')[3:] or None
     if key == ord('a'):
         git['add', '--', file]()
+    elif key == ord('A'):
+        with suspend_curses():
+            git['add', '-p', '--', file] & FG
     elif key == ord('c'):
-        #git["checkout", '--', file]()
-        pass
+        c = win.getch()
+        backup_dir = os.path.expanduser('~/lost/git-checkout/%s' % os.path.basename(os.getcwd()))
+        if not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
+        with open(os.path.join(backup_dir, '%s-%s.diff' % (time.strftime('%Y-%m-%d_%H-%M-%S'), os.path.basename(file))), 'w') as f:
+            f.write(git_diff(file))
+        git["checkout", '--', file]()
     elif key == ord('r'):
         git["reset", 'HEAD', '--', file]()
     elif key == curses.KEY_F5:
-        pass # Handling the key will cause the data to update
+        pass  # Handling the key will cause the data to update
     elif key in (curses.KEY_ENTER, ord('\n')):
         with suspend_curses():
             git['commit'] & FG
-    elif key == ord('e'):
+    elif key == ord('m'):
+        with suspend_curses():
+            git['commit', '--amend'] & FG
+    elif key == ord('d'):
+        with suspend_curses():
+            git['diff', '--', file] & FG
+    elif key in (ord('e'), ord('E')):
         edit(file)
+    elif key == ord('p') or key == ord('P'):
+        with suspend_curses():
+            git['push']
+    elif key == ord('R'):
+        with suspend_curses():
+            hub['pr']
+    elif key == ord('^'):
+        treeish = "%s^" % treeish if treeish else 'HEAD'
+    elif key == ord('H'):
+        treeish = 'HEAD'
+    elif key == ord('w'):
+        treeish = None
     elif key == ord('q'):
         sys.exit(0)
     else:
         return False
     return True
 
-@curses.wrapper
-def main(win):
-    curses.use_default_colors()
-    win.refresh()
 
-    h, w = win.getmaxyx()
-
-    diff_view = DiffView(win, w, h)
-    menu = MenuView(win, w, h)
-    update(diff_view, menu)
-
-    while 1:
-        c = win.getch()
-        if menu.handle(c) or handle(c, menu):
-            update(diff_view, menu)
-        else:
-            diff_view.handle(c)
-
+start_app.main(handle, update)
